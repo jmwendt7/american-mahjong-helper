@@ -47,6 +47,25 @@
 </div>
 
 <div class="panel">
+  <h2>Hand builder</h2>
+  <div class="row">
+    <input id="bName" placeholder="Hand name" style="width:12em">
+    <input id="bPts" placeholder="Pts" style="width:3.5em">
+  </div>
+  <div class="row" style="margin-top:6px">
+    <select id="bSize"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option></select> ×
+    <select id="bKind"><option value="num">Number</option><option value="F">Flower</option><option value="wind">Wind</option><option value="dragon">Dragon</option><option value="dsuit">Dragon matching suit</option></select>
+    <select id="bVal"></select>
+    <select id="bSuit"><option value="a">suit a</option><option value="b">suit b</option><option value="c">suit c</option></select>
+    <button id="bAdd">Add group</button>
+  </div>
+  <p class="muted" style="margin:4px 0">Suits a/b/c are three different suits. "Any" number = your choice of starting number; "+1" means one higher, etc.</p>
+  <div id="bPreview" class="row"></div>
+  <button id="bSave">Save hand to card</button> <button id="bUndo">Undo last group</button> <button id="bReset">Start over</button>
+  <span id="bCount" class="muted"></span>
+</div>
+
+<div class="panel">
   <h2>Card definition</h2>
   <p class="muted">The NMJL card is copyrighted and changes every year, so it is not bundled. The hands below are <b>original examples</b>; replace them with your own card, one hand per line:<br>
   <code>Name | points | pattern</code> &nbsp;with pattern groups <code>count:tile</code>.<br>
@@ -193,6 +212,42 @@ $('clear').onclick=()=>{rack=[];exposed=[];persist();render()};
 $('maxAway').oninput=render;
 $('saveCard').onclick=()=>{localStorage.mjCard=$('card').value;render()};
 $('resetCard').onclick=()=>{$('card').value=EXAMPLE;localStorage.mjCard=EXAMPLE;render()};
+
+// ---- hand builder ----
+let bGroups=[];
+const KIND_OPTS={
+  num:[['$','Any number'],['$+1','Any +1'],['$+2','Any +2'],['$+3','Any +3'],['$+4','Any +4'],['$+5','Any +5'],['$+6','Any +6'],['$+7','Any +7'],['$+8','Any +8'],...[1,2,3,4,5,6,7,8,9].map(n=>[''+n,''+n])],
+  F:[['F','Flower']],
+  wind:[['wN','North'],['wE','East'],['wW','West'],['wS','South']],
+  dragon:[['dG','Green'],['dR','Red'],['dW','White (Soap)']],
+  dsuit:[['d','Matches suit']]
+};
+function bKindChanged(){
+  const k=$('bKind').value;
+  $('bVal').innerHTML=KIND_OPTS[k].map(([v,t])=>`<option value="${v}">${t}</option>`).join('');
+  $('bSuit').style.display=(k==='num'||k==='dsuit')?'':'none';
+}
+function bRender(){
+  const p=$('bPreview');p.innerHTML='';
+  bGroups.forEach(g=>{const c=document.createElement('span');c.className='tile sm';c.textContent=g;p.append(c)});
+  const total=bGroups.reduce((a,g)=>a+ +g[0],0);
+  $('bCount').textContent=` ${total}/14 tiles`;
+}
+$('bKind').onchange=bKindChanged;
+$('bAdd').onclick=()=>{
+  const k=$('bKind').value,v=$('bVal').value,su=$('bSuit').value;
+  bGroups.push($('bSize').value+':'+((k==='num'||k==='dsuit')?v+su:v));bRender();
+};
+$('bUndo').onclick=()=>{bGroups.pop();bRender()};
+$('bReset').onclick=()=>{bGroups=[];bRender()};
+$('bSave').onclick=()=>{
+  const total=bGroups.reduce((a,g)=>a+ +g[0],0);
+  if(!$('bName').value.trim())return alert('Give the hand a name.');
+  if(total!==14)return alert(`A hand needs 14 tiles (currently ${total}).`);
+  const c=$('card');c.value=c.value.replace(/\s*$/,'')+`\n${$('bName').value.trim().replace(/\|/g,'/')} | ${$('bPts').value.trim()||'?'} | ${bGroups.join(' ')}`;
+  localStorage.mjCard=c.value;bGroups=[];$('bName').value='';$('bPts').value='';bRender();render();
+};
+bKindChanged();bRender();
 load();$('card').value=localStorage.mjCard||EXAMPLE;render();
 </script>
 </body>
