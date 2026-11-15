@@ -47,6 +47,15 @@
 </div>
 
 <div class="panel">
+  <h2>Scan rack photo <small>(beta)</small></h2>
+  <p class="muted" style="margin:0 0 6px">Photo of one row of upright tiles on a dark surface, good light, facing the camera. Colors give the suit; numbers are read from the printed numeral if visible. <b>Always check the guesses</b> before adding. Photos stay on your device (only the OCR engine and its language data download from a CDN).</p>
+  <input id="scanFile" type="file" accept="image/*" capture="environment">
+  <span id="scanStatus" class="muted"></span>
+  <div id="scanOut" class="row" style="margin-top:6px"></div>
+  <button id="scanAdd" style="display:none">Add checked tiles to rack</button>
+</div>
+
+<div class="panel">
   <h2>Hand builder</h2>
   <div class="row">
     <input id="bName" placeholder="Hand name" style="width:12em">
@@ -248,6 +257,81 @@ $('bSave').onclick=()=>{
   localStorage.mjCard=c.value;bGroups=[];$('bName').value='';$('bPts').value='';bRender();render();
 };
 bKindChanged();bRender();
+
+// ---- photo scan ----
+function rgb2hue(r,g,b){const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;if(!d)return 0;let h=mx===r?((g-b)/d)%6:mx===g?(b-r)/d+2:(r-g)/d+4;h*=60;return h<0?h+360:h}
+const isLight=(d,i)=>{const r=d[i],g=d[i+1],b=d[i+2],mx=Math.max(r,g,b),mn=Math.min(r,g,b);return mn>140&&mx-mn<70};
+const isInk=(d,i)=>{const r=d[i],g=d[i+1],b=d[i+2],mx=Math.max(r,g,b),mn=Math.min(r,g,b);return (mx-mn>60&&mx>60)||mx<80};
+function findTiles({data,width:w,height:h}){
+  const seen=new Uint8Array(w*h),comps=[];
+  for(let s=0;s<w*h;s++){
+    if(seen[s]||!isLight(data,s*4))continue;
+    let x0=w,y0=h,x1=0,y1=0,area=0;const st=[s];seen[s]=1;
+    while(st.length){const p=st.pop(),x=p%w,y=(p-x)/w;area++;
+      if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;
+      for(const q of [p-1,p+1,p-w,p+w]){
+        if(q<0||q>=w*h||seen[q]||(q===p-1&&x===0)||(q===p+1&&x===w-1))continue;
+        if(isLight(data,q*4)){seen[q]=1;st.push(q)}}}
+    comps.push({x0,y0,x1,y1,area});
+  }
+  const big=comps.filter(c=>c.area>0.004*w*h);
+  const maxH=Math.max(0,...big.map(c=>c.y1-c.y0+1));
+  const tiles=[];
+  big.filter(c=>c.y1-c.y0+1>0.6*maxH).sort((a,b)=>a.x0-b.x0).forEach(c=>{
+    const bw=c.x1-c.x0+1,bh=c.y1-c.y0+1,n=Math.max(1,Math.round(bw/bh/0.76)),tw=bw/n;
+    for(let k=0;k<n;k++)tiles.push({x:Math.round(c.x0+k*tw),y:c.y0,w:Math.round(tw),h:bh});
+  });
+  return tiles;
+}
+function classifyTile({data,width:w},t){
+  const bins={B:0,C:0,D:0,dark:0};let ink=0;
+  const mx=Math.round(t.w*.1),my=Math.round(t.h*.08);
+  for(let y=t.y+my;y<t.y+t.h-my;y++)for(let x=t.x+mx;x<t.x+t.w-mx;x++){
+    const i=(y*w+x)*4;if(!isInk(data,i))continue;ink++;
+    const r=data[i],g=data[i+1],b=data[i+2];
+    if(Math.max(r,g,b)<80&&Math.max(r,g,b)-Math.min(r,g,b)<60){bins.dark++;continue}
+    const hu=rgb2hue(r,g,b);
+    if(hu<25||hu>330)bins.C++;else if(hu>=70&&hu<175)bins.B++;else if(hu>=175&&hu<270)bins.D++;
+  }
+  const best=Object.entries(bins).sort((a,b)=>b[1]-a[1])[0];
+  return {suit:best[1]>0.2*ink&&best[0]!=='dark'?best[0]:null,ink};
+}
+let ocrWorker=null;
+async function readDigit(canvas){
+  if(!window.Tesseract){await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';s.onload=res;s.onerror=rej;document.head.append(s)})}
+  if(!ocrWorker){ocrWorker=await Tesseract.createWorker('eng');await ocrWorker.setParameters({tessedit_char_whitelist:'123456789',tessedit_pageseg_mode:'10'})}
+  const {data}=await ocrWorker.recognize(canvas);
+  const m=data.text.trim().match(/^[1-9]$/);return m&&data.confidence>45?m[0]:null;
+}
+function inkCanvas(img,t){
+  const c=document.createElement('canvas');c.width=t.w*2;c.height=t.h*2;const x=c.getContext('2d');
+  const src=document.createElement('canvas');src.width=t.w;src.height=t.h;const sx=src.getContext('2d'),o=sx.createImageData(t.w,t.h);
+  for(let y=0;y<t.h;y++)for(let xx=0;xx<t.w;xx++){const i=((t.y+y)*img.width+t.x+xx)*4,j=(y*t.w+xx)*4;const v=isInk(img.data,i)?0:255;o.data[j]=o.data[j+1]=o.data[j+2]=v;o.data[j+3]=255}
+  sx.putImageData(o,0,0);x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(src,0,0,c.width,c.height);return c;
+}
+let scanned=[];
+$('scanFile').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  const bmp=await createImageBitmap(f),sc=Math.min(1,900/bmp.width);
+  const cv=document.createElement('canvas');cv.width=Math.round(bmp.width*sc);cv.height=Math.round(bmp.height*sc);
+  const cx=cv.getContext('2d',{willReadFrequently:true});cx.drawImage(bmp,0,0,cv.width,cv.height);
+  const img=cx.getImageData(0,0,cv.width,cv.height);
+  const tiles=findTiles(img);const out=$('scanOut');out.innerHTML='';scanned=[];
+  $('scanStatus').textContent=tiles.length?` Found ${tiles.length} tiles, reading numbers…`:' No tiles found. Try a darker background and better light.';
+  for(const t of tiles){
+    const {suit}=classifyTile(img,t);let num=null;
+    try{num=await readDigit(inkCanvas(img,t))}catch{}
+    const guess=suit&&num?num+suit:'?';
+    const box=document.createElement('div');box.style.cssText='background:#faf6e8;padding:4px;border-radius:5px;text-align:center';
+    const th=document.createElement('canvas');th.width=48;th.height=Math.round(48*t.h/t.w);th.getContext('2d').drawImage(cv,t.x,t.y,t.w,t.h,0,0,th.width,th.height);
+    const sel=document.createElement('select');
+    sel.innerHTML='<option value="?">?</option>'+ALL.map(a=>`<option>${a}</option>`).join('');
+    sel.value=guess;if(suit&&!num)sel.dataset.suit=suit;
+    box.append(th,document.createElement('br'),sel);out.append(box);scanned.push(sel);
+  }
+  if(tiles.length){$('scanStatus').textContent=` ${tiles.length} tiles found. Fix any "?" or wrong guesses, then add.`;$('scanAdd').style.display=''}
+};
+$('scanAdd').onclick=()=>{scanned.forEach(s=>{if(s.value!=='?')rack.push(s.value)});persist();$('scanOut').innerHTML='';scanned=[];$('scanAdd').style.display='none';$('scanStatus').textContent='';render()};
 load();$('card').value=localStorage.mjCard||EXAMPLE;render();
 </script>
 </body>
