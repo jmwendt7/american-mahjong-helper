@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>American Mahjong Hand Finder</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;background:#0f3d2e;color:#f3f0e6}
+  main{max-width:960px;margin:auto;padding:16px}
+  h1{margin:.2em 0}h2{margin:1em 0 .3em;font-size:1.1em}
+  .panel{background:#165a43;border-radius:8px;padding:12px;margin-bottom:12px}
+  .tile{display:inline-block;min-width:38px;padding:6px 4px;margin:2px;border-radius:5px;background:#faf6e8;color:#111;text-align:center;font-weight:600;cursor:pointer;border:2px solid transparent;user-select:none}
+  .tile.sel{border-color:#ffb703}.tile.B{color:#1b7a2b}.tile.C{color:#b3261e}.tile.D{color:#1a4fa3}.tile.sm{cursor:default;min-width:0;padding:3px 6px}
+  button{padding:6px 10px;border-radius:5px;border:0;background:#ffb703;font-weight:600;cursor:pointer;margin:2px}
+  .row{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+  .hand{background:#faf6e8;color:#111;border-radius:6px;padding:8px;margin:6px 0}
+  .hand b{font-size:1.05em}.away{float:right;font-weight:700}
+  textarea{width:100%;height:160px;font-family:monospace;box-sizing:border-box}
+  small,.muted{opacity:.8}
+</style>
+</head>
+<body>
+<main>
+<h1>🀄 American Mahjong Hand Finder</h1>
+<p class="muted">Enter your exposed (locked) sets and the tiles on your rack; see which hands on your card are still possible and how many tiles you need.</p>
+
+<div class="panel">
+  <h2>1. Pick a tile</h2>
+  <div id="palette"></div>
+  <div class="row" style="margin-top:6px">
+    <button id="addRack">+ Add to rack</button>
+    <span>Exposed set:</span>
+    <button data-exp="3">Pung</button><button data-exp="4">Kong</button><button data-exp="5">Quint</button>
+    <button id="clear">Clear all</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Exposed sets <small>(click to remove)</small></h2><div id="exposed"></div>
+  <h2>Rack <small>(click to remove)</small></h2><div id="rack"></div>
+</div>
+
+<div class="panel">
+  <h2>Possible hands</h2>
+  <label>Show hands up to <input id="maxAway" type="number" value="8" min="0" max="14" style="width:3em"> tiles away</label>
+  <div id="results"></div>
+</div>
+
+<div class="panel">
+  <h2>Card definition</h2>
+  <p class="muted">The NMJL card is copyrighted and changes every year, so it is not bundled. The hands below are <b>original examples</b>; replace them with your own card, one hand per line:<br>
+  <code>Name | points | pattern</code> &nbsp;with pattern groups <code>count:tile</code>.<br>
+  Tiles: <code>1a</code>–<code>9c</code> (number + suit letter; a/b/c are three <i>different</i> suits), <code>$a</code> = any number, <code>$+1a</code> = that number plus 1,
+  <code>F</code> flower, <code>wN wE wW wS</code> winds, <code>dG dR dW</code> dragons, <code>da</code> = dragon matching suit a. Use <code>#</code> for comments.
+  Jokers can fill any group of 3+.</p>
+  <textarea id="card"></textarea>
+  <button id="saveCard">Save card</button> <button id="resetCard">Reset to examples</button>
+</div>
+</main>
+<script>
+const SUITS = ['B','C','D'], SUITNAME = {B:'Bam',C:'Crak',D:'Dot'};
+const DRAGON = {B:'dG',C:'dR',D:'dW'};
+const EXAMPLE = `# Original example hands (NOT the NMJL card). Replace with your card.
+Consecutive Run | 25 | 2:F 3:$a 3:$+1a 3:$+2a 3:$+3a
+Three Kongs + Dragon Pair | 30 | 4:$a 4:$b 4:$c 2:da
+Winds | 25 | 4:wN 4:wE 3:wW 3:wS
+Like Pairs | 30 | 2:$a 2:$+1a 2:$+2a 2:$+3a 2:$+4a 2:$+5a 2:$+6a
+Flowers & Kongs | 25 | 2:F 4:$a 4:$b 4:$c
+Pungs Across Suits | 25 | 3:$a 3:$b 3:$c 3:$+1a 2:F
+Dragons & Winds | 30 | 3:dG 3:dR 3:dW 3:wN 2:F`;
+
+const label = t => t==='J'?'Joker':t==='F'?'🌸':t[0]==='w'?t[1]:t[0]==='d'&&t.length===2&&'GRW'.includes(t[1])?{G:'🐲G',R:'🐲R',W:'🐲W'}[t[1]]:t;
+function tileEl(t, cls=''){
+  const e=document.createElement('span');
+  const suit = /^[1-9][BCD]$/.test(t)?t[1]:'';
+  e.className=`tile ${suit} ${cls}`;
+  e.textContent = suit ? t[0]+SUITNAME[suit][0] : label(t);
+  e.title = suit ? `${t[0]} ${SUITNAME[suit]}` : t;
+  return e;
+}
+const ALL = [...SUITS.flatMap(s=>[1,2,3,4,5,6,7,8,9].map(n=>n+s)),'wN','wE','wW','wS','dG','dR','dW','F','J'];
+
+let sel=null, rack=[], exposed=[];
+const load=()=>{try{const s=JSON.parse(localStorage.mjState||'{}');rack=s.rack||[];exposed=s.exposed||[]}catch{}};
+const persist=()=>localStorage.mjState=JSON.stringify({rack,exposed});
+
+// ---- card parsing & expansion ----
+function parseCard(text){
+  const hands=[],errors=[];
+  text.split('\n').forEach((line,i)=>{
+    line=line.trim(); if(!line||line.startsWith('#'))return;
+    const p=line.split('|').map(s=>s.trim());
+    if(p.length<3){errors.push(`Line ${i+1}: need "Name | points | pattern"`);return}
+    const groups=[];let ok=true;
+    for(const g of p[2].split(/\s+/)){
+      const m=g.match(/^(\d):(.+)$/); if(!m){ok=false;break}
+      const t=m[2];
+      let tok;
+      if(t==='F'||/^w[NEWS]$/.test(t)||/^d[GRW]$/.test(t)) tok={fixed:t};
+      else if(/^d[abc]$/.test(t)) tok={dragonSuit:t[1]};
+      else if(/^[1-9][abc]$/.test(t)) tok={num:+t[0],suit:t[1]};
+      else if(/^\$(\+\d)?[abc]$/.test(t)) tok={off:+(t.match(/\+(\d)/)||[0,0])[1],suit:t.slice(-1),var:true};
+      else {ok=false;break}
+      groups.push({size:+m[1],...tok});
+    }
+    const total=groups.reduce((a,g)=>a+g.size,0);
+    if(!ok||!groups.length){errors.push(`Line ${i+1}: bad pattern`);return}
+    if(total!==14)errors.push(`Line ${i+1} (${p[0]}): ${total} tiles, expected 14`);
+    hands.push({name:p[0],pts:p[1],pattern:p[2],groups});
+  });
+  return {hands,errors};
+}
+function* perms(arr,n){ if(n===0){yield [];return} for(const x of arr) for(const r of perms(arr.filter(y=>y!==x),n-1)) yield [x,...r]; }
+function* instances(h){
+  const letters=[...new Set(h.groups.filter(g=>g.suit||g.dragonSuit).map(g=>g.suit||g.dragonSuit))];
+  const hasVar=h.groups.some(g=>g.var);
+  for(const assign of perms(SUITS,letters.length)){
+    const map=Object.fromEntries(letters.map((l,i)=>[l,assign[i]]));
+    for(let base=hasVar?1:0;base<=(hasVar?9:0);base++){
+      const out=[];let ok=true;
+      for(const g of h.groups){
+        let t;
+        if(g.fixed)t=g.fixed;
+        else if(g.dragonSuit)t=DRAGON[map[g.dragonSuit]];
+        else if(g.var){const n=base+g.off;if(n>9){ok=false;break}t=n+map[g.suit]}
+        else t=g.num+map[g.suit];
+        out.push({tile:t,size:g.size});
+      }
+      if(ok)yield out;
+    }
+  }
+}
+function evaluate(inst){
+  const have={};rack.forEach(t=>{if(t!=='J')have[t]=(have[t]||0)+1});
+  const jokers=rack.filter(t=>t==='J').length;
+  const used=new Array(inst.length).fill(false);
+  for(const e of exposed){
+    const i=inst.findIndex((g,k)=>!used[k]&&g.tile===e.tile&&g.size===e.size);
+    if(i<0)return null; used[i]=true;
+  }
+  let missing=0,jokerable=0;const pool={...have};
+  inst.forEach((g,i)=>{
+    if(used[i])return;
+    const take=Math.min(pool[g.tile]||0,g.size);
+    pool[g.tile]=(pool[g.tile]||0)-take;
+    const need=g.size-take;
+    missing+=need; if(g.size>=3)jokerable+=need;
+  });
+  return missing-Math.min(jokers,jokerable);
+}
+function analyze(){
+  const {hands,errors}=parseCard($('card').value);
+  const res=[];
+  for(const h of hands){
+    let best=null,bestInst=null;
+    for(const inst of instances(h)){const a=evaluate(inst);if(a!==null&&(best===null||a<best)){best=a;bestInst=inst}}
+    if(best!==null)res.push({h,away:best,inst:bestInst});
+  }
+  return {res:res.sort((a,b)=>a.away-b.away),errors,total:hands.length};
+}
+
+// ---- UI ----
+const $=id=>document.getElementById(id);
+function render(){
+  const pal=$('palette');pal.innerHTML='';
+  ALL.forEach(t=>{const e=tileEl(t,t===sel?'sel':'');e.onclick=()=>{sel=t;render()};pal.append(e)});
+  $('exposed').innerHTML='';
+  exposed.forEach((x,i)=>{const w=document.createElement('span');w.className='tile sm';w.style.cssText='background:none;color:inherit;cursor:pointer';
+    w.onclick=()=>{exposed.splice(i,1);persist();render()};
+    for(let k=0;k<x.size;k++)w.append(tileEl(x.tile,'sm'));$('exposed').append(w)});
+  $('rack').innerHTML='';
+  [...rack].sort().forEach(t=>{const e=tileEl(t);e.onclick=()=>{rack.splice(rack.indexOf(t),1);persist();render()};$('rack').append(e)});
+  const {res,errors,total}=analyze();
+  const max=+$('maxAway').value;
+  const r=$('results');r.innerHTML='';
+  errors.forEach(m=>{const d=document.createElement('div');d.className='muted';d.textContent='⚠ '+m;r.append(d)});
+  const shown=res.filter(x=>x.away<=max);
+  if(!shown.length)r.append(Object.assign(document.createElement('p'),{textContent:total?'No hands match within that range.':'No hands defined.'}));
+  shown.forEach(({h,away,inst})=>{
+    const d=document.createElement('div');d.className='hand';
+    d.innerHTML=`<span class="away">${away===0?'MAHJONG!':away+' away'}</span><b></b> <small></small><div class="row"></div>`;
+    d.querySelector('b').textContent=h.name;d.querySelector('small').textContent=h.pts+' pts';
+    const row=d.querySelector('.row');
+    inst.forEach(g=>{const grp=document.createElement('span');grp.style.margin='0 6px';for(let k=0;k<g.size;k++)grp.append(tileEl(g.tile,'sm'));row.append(grp)});
+    r.append(d);
+  });
+}
+document.querySelectorAll('[data-exp]').forEach(b=>b.onclick=()=>{
+  if(!sel||sel==='J')return alert('Pick a (non-joker) tile first.');
+  exposed.push({tile:sel,size:+b.dataset.exp});persist();render()});
+$('addRack').onclick=()=>{if(sel){rack.push(sel);persist();render()}};
+$('clear').onclick=()=>{rack=[];exposed=[];persist();render()};
+$('maxAway').oninput=render;
+$('saveCard').onclick=()=>{localStorage.mjCard=$('card').value;render()};
+$('resetCard').onclick=()=>{$('card').value=EXAMPLE;localStorage.mjCard=EXAMPLE;render()};
+load();$('card').value=localStorage.mjCard||EXAMPLE;render();
+</script>
+</body>
+</html>
